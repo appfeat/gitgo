@@ -4,25 +4,57 @@ import sys
 import os
 import re
 import datetime
+import string
 
 BLUE="\033[34m"; GREEN="\033[32m"; YELLOW="\033[33m"
 CYAN="\033[36m"; BOLD="\033[1m"; RESET="\033[0m"
 
-# ---------------- helpers ----------------
-def run(cmd, capture=False):
+# ---------------- safe execution ----------------
+def run(argv, capture=False, env=None, timeout=None):
     if capture:
-        return subprocess.check_output(cmd, shell=True, text=True).strip()
-    subprocess.check_call(cmd, shell=True)
+        return subprocess.check_output(argv, text=True, env=env, timeout=timeout).strip()
+    subprocess.check_call(argv, env=env, timeout=timeout)
 
-def safe(cmd):
+def safe(argv):
     try:
-        return subprocess.check_output(cmd, shell=True, text=True).strip()
-    except:
+        return subprocess.check_output(argv, text=True).strip()
+    except Exception:
         return ""
 
-def has_commits():
-    return bool(safe("git rev-parse --verify HEAD"))
+# ---------------- validation ----------------
+def is_printable_no_space(s):
+    return s and all(c in string.printable and not c.isspace() for c in s)
 
+def clamp_timeout(val, default="12"):
+    try:
+        t = int(val)
+        return str(min(60, max(1, t)))
+    except Exception:
+        return default
+
+# ---------------- git helpers ----------------
+def has_commits():
+    return bool(safe(["git", "rev-parse", "--verify", "HEAD"]))
+
+def git_config(key):
+    return safe(["git", "config", key])
+
+def git_config_set(key, value):
+    run(["git", "config", key, value])
+
+def tag_exists(tag):
+    return subprocess.call(
+        ["git", "show-ref", "--tags", "--verify", "--quiet", f"refs/tags/{tag}"]
+    ) == 0
+
+def next_free_version(major, minor, patch):
+    while True:
+        candidate = f"v{major}.{minor}.{patch+1}"
+        if not tag_exists(candidate):
+            return candidate
+        patch += 1
+
+# ---------------- summary enforcement ----------------
 def enforce_summary_limit(msg, limit=72):
     lines = msg.strip().splitlines()
     if not lines:
@@ -38,12 +70,12 @@ def enforce_summary_limit(msg, limit=72):
 
 # ---------------- identity ----------------
 def read_identity():
-    n = safe("git config user.name")
-    e = safe("git config user.email")
+    n = git_config("user.name")
+    e = git_config("user.email")
     if n or e:
         return n, e, "repo"
-    n = safe("git config --global user.name")
-    e = safe("git config --global user.email")
+    n = safe(["git", "config", "--global", "user.name"])
+    e = safe(["git", "config", "--global", "user.email"])
     if n or e:
         return n, e, "global"
     return "", "", "none"
@@ -58,11 +90,12 @@ def prompt_identity(n, e):
 # ---------------- dashboard ----------------
 def show_repo_dashboard():
     name, email, source = read_identity()
-    model = safe("git config gup.model")
-    timeout = safe("git config gup.timeout")
+    model = git_config("gup.model")
+    timeout = git_config("gup.timeout")
 
     print("\nRepository status")
     print("────────────────────────────────")
+
     print("Identity:")
     print(f"  Name:   {name or '(not set)'}")
     print(f"  Email:  {email or '(not set)'}")
@@ -72,27 +105,29 @@ def show_repo_dashboard():
     print(f"  Model:   {model or '(not set)'}")
     print(f"  Timeout: {timeout + 's' if timeout else '(default)'}")
 
-    print(f"\nBranch:     {safe('git branch --show-current') or '(detached)'}")
-    tag = safe("git describe --tags --abbrev=0")
+    branch = safe(["git", "branch", "--show-current"]) or "(detached)"
+    print(f"\nBranch:     {branch}")
+
+    tag = safe(["git", "describe", "--tags", "--abbrev=0"])
     if tag:
         print(f"Latest tag: {tag}")
 
     print("\nRemotes:")
-    print(safe("git remote -v") or "  (none)")
+    print(safe(["git", "remote", "-v"]) or "  (none)")
 
     print("\nWorking tree:")
-    print("✔ Clean" if not safe("git status --short") else safe("git status --short"))
+    print("✔ Clean" if not safe(["git", "status", "--short"]) else safe(["git", "status", "--short"]))
 
     print("\nRecent commits:")
     print(
-        safe("git log -3 --pretty=format:'%h | %ad | %s' --date=short")
+        safe(["git", "log", "-3", "--pretty=format:%h | %ad | %s", "--date=short"])
         or "  (no commits yet)"
     )
     print()
 
 # ---------------- models ----------------
 def list_llm_models():
-    out = safe("llm models")
+    out = safe(["llm", "models"])
     models = []
     for line in out.splitlines():
         line = line.strip()
@@ -101,67 +136,36 @@ def list_llm_models():
         label = line
         core = line.split("(", 1)[0].strip()
         model_id = core.split(":")[-1].strip()
-        models.append({"id": model_id, "label": label})
+        if is_printable_no_space(model_id):
+            models.append({"id": model_id, "label": label})
     return models
 
-def model_score(m):
-    name = m["id"]
-    score = 1000 if "gemini" in name else 500
-    v = re.search(r"(\\d+)\\.(\\d+)", name)
-    if v:
-        score += int(v.group(1))*100 + int(v.group(2))*10
-    if "flash" in name:
-        score += 50
-    if "lite" in name or "mini" in name:
-        score += 30
-    return score
-
 def pick_model(models):
-    gemini = [m for m in models if "gemini" in m["id"]]
-    openai = [m for m in models if "gemini" not in m["id"]]
-    options = []
-    for m in (
-        max(gemini, key=model_score, default=None),
-        max(openai, key=model_score, default=None),
-    ):
-        if m and m not in options:
-            options.append(m)
-
     print("\nAI model:")
-    for i,m in enumerate(options,1):
+    for i, m in enumerate(models[:2], 1):
         print(f" {i}) {m['label']}")
     print(" 3) More models...")
 
     c = input("Select model [1]: ").strip()
     if c == "3":
-        for i,m in enumerate(models,1):
+        for i, m in enumerate(models, 1):
             print(f" {i}) {m['label']}")
         sel = input("Select model: ").strip()
-        return models[int(sel)-1]
-    if c.isdigit() and 1 <= int(c) <= len(options):
-        return options[int(c)-1]
-    return options[0]
-
-def configure_timeout(current):
-    val = input(f"Timeout in seconds (max 60) [{current or '12'}]: ").strip()
-    if not val:
-        return current
-    try:
-        t = min(60, max(1, int(val)))
-        return str(t)
-    except:
-        return current
+        return models[int(sel) - 1]
+    if c.isdigit() and int(c) in (1, 2):
+        return models[int(c) - 1]
+    return models[0]
 
 # ==========================================================
 # repo check
 # ==========================================================
-if safe("git rev-parse --is-inside-work-tree") != "true":
+if safe(["git", "rev-parse", "--is-inside-work-tree"]) != "true":
     print("Not inside a Git repository.")
     sys.exit(1)
 
 bootstrap = not has_commits()
 
-if not bootstrap and not safe("git status --porcelain"):
+if not bootstrap and not safe(["git", "status", "--porcelain"]):
     print("Nothing to commit.")
     show_repo_dashboard()
     sys.exit(0)
@@ -169,10 +173,10 @@ if not bootstrap and not safe("git status --porcelain"):
 # ==========================================================
 # version
 # ==========================================================
-last = "v0.0.0" if bootstrap else safe("git describe --tags --abbrev=0") or "v0.0.0"
-m = re.match(r"v(\\d+)\\.(\\d+)\\.(\\d+)", last)
-major, minor, patch = map(int, m.groups()) if m else (0,0,0)
-next_version = f"v{major}.{minor}.{patch+1}"
+last = "v0.0.0" if bootstrap else safe(["git", "describe", "--tags", "--abbrev=0"]) or "v0.0.0"
+m = re.match(r"v(\d+)\.(\d+)\.(\d+)", last)
+major, minor, patch = map(int, m.groups()) if m else (0, 0, 0)
+next_version = next_free_version(major, minor, patch)
 
 # ==========================================================
 # identity
@@ -185,38 +189,36 @@ if source == "none":
 # ==========================================================
 # stage
 # ==========================================================
-run("git add .")
-files = safe("git diff --cached --name-only").splitlines()
+run(["git", "add", "."])
+files = safe(["git", "diff", "--cached", "--name-only"]).splitlines()
 if not files:
     print("No staged changes.")
     show_repo_dashboard()
     sys.exit(0)
 
 # ==========================================================
-# model + timeout (silent if exists)
+# model + timeout
 # ==========================================================
 models = list_llm_models()
-model_id = safe("git config gup.model")
-timeout = safe("git config gup.timeout") or "12"
+model_id = git_config("gup.model")
+timeout = clamp_timeout(git_config("gup.timeout"))
 
-if model_id:
-    model = next((m for m in models if m["id"] == model_id), None)
-else:
+model = next((m for m in models if m["id"] == model_id), None)
+if not model:
     model = pick_model(models)
-    run(f'git config gup.model "{model["id"]}"')
+    git_config_set("gup.model", model["id"])
 
 # ==========================================================
 # commit message generation
 # ==========================================================
 commit_msg = (
     "Initial commit" if bootstrap else
-    "Update project configuration" if len(files)==1 else
+    "Update project configuration" if len(files) == 1 else
     f"Update {len(files)} project files"
 )
 
 def generate_message():
-    nonlocal_ai_warning = None
-    diff = safe("git diff --cached --unified=0")[:15000]
+    diff = safe(["git", "diff", "--cached", "--unified=0"])[:15000]
     prompt = f"""Improve this Git commit message.
 
 Rules:
@@ -231,7 +233,7 @@ Diff:
 """
     try:
         p = subprocess.Popen(
-            ["llm","-m",model["id"],prompt],
+            ["llm", "-m", model["id"], prompt],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True
@@ -263,28 +265,20 @@ while True:
     print("1) Commit & push")
     print("2) Edit identity")
     print("3) Edit message")
-    print("4) Change model & regenerate")
-    print("5) Cancel")
+    print("4) Cancel")
     c = input("Choice: ").strip()
 
     if c == "1":
         break
     if c == "2":
         name, email = prompt_identity(name, email)
-        run(f'git config user.name "{name}"')
-        run(f'git config user.email "{email}"')
+        git_config_set("user.name", name)
+        git_config_set("user.email", email)
         source = "repo"
     if c == "3":
         print("Enter message (Ctrl+D):")
         commit_msg = enforce_summary_limit(sys.stdin.read().strip())
     if c == "4":
-        model = pick_model(models)
-        run(f'git config gup.model "{model["id"]}"')
-        timeout = configure_timeout(timeout)
-        if timeout:
-            run(f'git config gup.timeout "{timeout}"')
-        commit_msg, ai_warning = generate_message()
-    if c == "5":
         sys.exit(0)
 
 # ==========================================================
@@ -305,11 +299,11 @@ Version: {next_version}
 Timestamp: {ts}
 """
 
-subprocess.check_call(["git","commit","-m",final_msg], env=env)
-subprocess.check_call(["git","tag","-a",next_version,"-m",final_msg])
+subprocess.check_call(["git", "commit", "-m", final_msg], env=env)
+subprocess.check_call(["git", "tag", "-a", next_version, "-m", final_msg])
 
-branch = safe("git branch --show-current") or "main"
-run(f"git push -u origin {branch}")
-run(f"git push origin {next_version}")
+branch = safe(["git", "branch", "--show-current"]) or "main"
+run(["git", "push", "-u", "origin", branch])
+run(["git", "push", "origin", next_version])
 
 print(f"{GREEN}Released {next_version}{RESET}")
