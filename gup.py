@@ -6,30 +6,13 @@ import re
 import datetime
 
 # ==========================================================
-# CONFIGURATION
+# gup — final, boring, trustworthy (model parsing fixed)
 # ==========================================================
-DEFAULT_MODEL = "gemini-2.5-flash"   # Change to e.g. "gemini/gemini-2.5-flash"
-DEBUG_AI = True                 # Prints stderr from llm if True
 
-# ==========================================================
-# COLORS
-# ==========================================================
-BLUE = "\033[34m"
-GREEN = "\033[32m"
-YELLOW = "\033[33m"
-MAGENTA = "\033[35m"
-CYAN = "\033[36m"
-RED = "\033[31m"
-BOLD = "\033[1m"
-RESET = "\033[0m"
+BLUE="\033[34m"; GREEN="\033[32m"; YELLOW="\033[33m"
+CYAN="\033[36m"; BOLD="\033[1m"; RESET="\033[0m"
 
-def say(msg): print(f"{GREEN}{msg}{RESET}")
-def warn(msg): print(f"{YELLOW}{msg}{RESET}")
-def err(msg): print(f"{RED}{msg}{RESET}", file=sys.stderr)
-
-# ==========================================================
-# HELPERS
-# ==========================================================
+# ---------------- helpers ----------------
 def run(cmd, capture=False, env=None):
     if capture:
         return subprocess.check_output(cmd, shell=True, text=True, env=env).strip()
@@ -42,224 +25,268 @@ def safe(cmd):
         return ""
 
 def has_commits():
-    return safe("git rev-parse --verify HEAD") != ""
+    return bool(safe("git rev-parse --verify HEAD"))
 
-def semantic(tag):
-    m = re.match(r"^v([0-9]+)\.([0-9]+)\.([0-9]+)$", tag)
-    return tuple(map(int, m.groups())) if m else None
-
-def truncate_summary(s, limit=80):
-    s = s.strip()
-    if len(s) <= limit:
-        return s
-    cut = s[:limit]
+def enforce_summary_limit(msg, limit=72):
+    lines = msg.strip().splitlines()
+    if not lines:
+        return msg
+    summary = lines[0]
+    if len(summary) <= limit:
+        return msg
+    cut = summary[:limit]
     if " " in cut:
         cut = cut.rsplit(" ", 1)[0]
-    return cut + "…"
+    lines[0] = cut
+    return "\n".join(lines)
 
-def ensure_identity():
-    name = safe("git config --global user.name")
-    email = safe("git config --global user.email")
+# ---------------- identity ----------------
+def read_identity():
+    n = safe("git config user.name")
+    e = safe("git config user.email")
+    if n or e:
+        return n, e, "repo"
+    n = safe("git config --global user.name")
+    e = safe("git config --global user.email")
+    if n or e:
+        return n, e, "global"
+    return "", "", "none"
 
-    if name and email:
-        return name, email
+def prompt_identity(n, e):
+    print("\nEnter commit identity (blank keeps current):")
+    n2 = input(f"Name [{n}]: ").strip() or n
+    e2 = input(f"Email [{e}]: ").strip() or e
+    return n2, e2
 
-    warn("⚠️ Git identity not set. Required before committing.")
-    name = input("Enter author name: ").strip()
-    email = input("Enter author email: ").strip()
+# ---------------- models ----------------
+def list_llm_models():
+    """
+    Returns list of dicts:
+    { "id": "gpt-5-mini", "label": "OpenAI Chat: gpt-5-mini" }
+    """
+    out = safe("llm models")
+    models = []
+    for line in out.splitlines():
+        line = line.strip()
+        if not line or line.endswith(":"):
+            continue
 
-    if not name or not email:
-        err("❌ Both name and email are required.")
-        sys.exit(4)
+        label = line
+        core = line
 
-    save = input("Save identity globally? (y/N): ").strip().lower()
-    if save == "y":
-        run(f'git config --global user.name "{name}"')
-        run(f'git config --global user.email "{email}"')
-        say("💾 Saved Git global identity.")
+        # Strip aliases
+        if "(" in core:
+            core = core.split("(", 1)[0].strip()
 
-    return name, email
+        # Extract canonical id (after last colon)
+        if ":" in core:
+            model_id = core.split(":")[-1].strip()
+        else:
+            model_id = core.strip()
+
+        models.append({"id": model_id, "label": label})
+
+    return models
+
+def model_score(m):
+    name = m["id"]
+    score = 0
+    if "gemini" in name:
+        score += 1000
+    else:
+        score += 500
+    v = re.search(r"(\d+)\.(\d+)", name)
+    if v:
+        score += int(v.group(1))*100 + int(v.group(2))*10
+    if "flash" in name:
+        score += 50
+    if "lite" in name or "mini" in name:
+        score += 30
+    return score
+
+def read_saved_model():
+    return safe("git config gup.model")
 
 # ==========================================================
-# AI COMMIT MESSAGE HANDLER
+# repo check
 # ==========================================================
-def generate_ai_commit_message(model, diff):
-    prompt = f"""
-You are a precise engineer. Follow the required format.
+if safe("git rev-parse --is-inside-work-tree") != "true":
+    print("Not inside a Git repository.")
+    sys.exit(1)
 
-Output EXACTLY in this structure:
+bootstrap = not has_commits()
 
-<One-line summary (<120 chars)>
+if not bootstrap and not safe("git status --porcelain"):
+    print("Nothing to commit.")
+    sys.exit(0)
 
-### Changes
-- concise bullet
-- concise bullet
+# ==========================================================
+# version
+# ==========================================================
+last = "v0.0.0" if bootstrap else safe("git describe --tags --abbrev=0") or "v0.0.0"
+m = re.match(r"v(\d+)\.(\d+)\.(\d+)", last)
+major, minor, patch = map(int, m.groups()) if m else (0,0,0)
+next_version = f"v{major}.{minor}.{patch+1}"
 
-### Rationale
-Sentence explaining intent OR:
-Rationale: Not assessable from diff.
+# ==========================================================
+# identity
+# ==========================================================
+name, email, source = read_identity()
+if source == "none":
+    name, email = prompt_identity("", "")
+    source = "prompted"
 
-NEVER include file names.
-NEVER fabricate information.
+# ==========================================================
+# stage
+# ==========================================================
+run("git add .")
+files = safe("git diff --cached --name-only").splitlines()
+if not files:
+    print("No staged changes.")
+    sys.exit(0)
+
+# ==========================================================
+# model selection (progressive + memory)
+# ==========================================================
+models = list_llm_models()
+saved_id = read_saved_model()
+saved_model = next((m for m in models if m["id"] == saved_id), None)
+
+gemini = [m for m in models if "gemini" in m["id"]]
+openai = [m for m in models if "gemini" not in m["id"]]
+
+best_gemini = max(gemini, key=model_score) if gemini else None
+best_openai = max(openai, key=model_score) if openai else None
+
+options = []
+if saved_model:
+    options.append(saved_model)
+for m in (best_gemini, best_openai):
+    if m and m not in options:
+        options.append(m)
+options = options[:2]
+
+print("\nAI model:")
+for i,m in enumerate(options,1):
+    tag = " (default)" if i == 1 else ""
+    print(f" {i}) {m['label']}{tag}")
+print(" 3) More models...")
+
+choice = input("Select model [default]: ").strip()
+
+if choice == "3":
+    print("\nAll models:")
+    for i,m in enumerate(models,1):
+        print(f" {i}) {m['label']}")
+    c = input("Select model: ").strip()
+    model = models[int(c)-1] if c.isdigit() and 1<=int(c)<=len(models) else options[0]
+elif choice.isdigit() and 1<=int(choice)<=len(options):
+    model = options[int(choice)-1]
+else:
+    model = options[0]
+
+run(f'git config gup.model "{model["id"]}"')
+
+# ==========================================================
+# commit message (deterministic + AI + enforced limit)
+# ==========================================================
+if bootstrap:
+    commit_msg = "Initial commit"
+elif len(files) == 1:
+    commit_msg = "Update project configuration"
+elif len(files) <= 5:
+    commit_msg = f"Update {len(files)} project files"
+else:
+    commit_msg = f"Update multiple project files ({len(files)})"
+
+ai_warning = None
+diff = safe("git diff --cached --unified=0")[:15000]
+prompt = f"""Improve this Git commit message.
+
+Rules:
+- FIRST line ≤ 72 characters.
+- Do NOT invent details.
+- You may add paragraphs if useful.
+
+Current message:
+{commit_msg}
 
 Diff:
 {diff}
 """
 
-    try:
-        proc = subprocess.Popen(
-            ["llm", "-m", model],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
-        out, errout = proc.communicate(prompt, timeout=25)
+try:
+    p = subprocess.Popen(
+        ["llm", "-m", model["id"], prompt],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True
+    )
+    out, err = p.communicate(timeout=12)
+    if out.strip():
+        commit_msg = out.strip()
+    elif err.strip():
+        ai_warning = err.strip()
+    else:
+        ai_warning = "AI returned empty output"
+except subprocess.TimeoutExpired:
+    ai_warning = "AI request timed out"
+except Exception as e:
+    ai_warning = str(e)
 
-        if DEBUG_AI and errout:
-            warn(f"[AI stderr] {errout}")
+commit_msg = enforce_summary_limit(commit_msg)
 
-        if not out or len(out.strip()) < 10:
-            warn("⚠️ AI returned empty or too-small output.")
-            return None
-
-        # Detect generic refusal text from Gemini Mini
-        lower = out.lower()
-        if "what would you like me to" in lower or "please provide me" in lower:
-            warn("⚠️ Model refused structured prompt.")
-            return None
-
-        return out.strip()
-
-    except subprocess.TimeoutExpired:
-        warn("⚠️ AI timeout.")
-        return None
-    except Exception as e:
-        warn(f"⚠️ AI failure: {e}")
-        return None
+if ai_warning:
+    print(f"\n{YELLOW}⚠️ AI commit message generation failed{RESET}")
+    print(f"{YELLOW}   Reason: {ai_warning}{RESET}")
+    print(f"{YELLOW}   Model: {model['id']}{RESET}\n")
 
 # ==========================================================
-# START — MUST BE INSIDE A REPO
+# review loop
 # ==========================================================
-inside = safe("git rev-parse --is-inside-work-tree")
-if inside != "true":
-    err("❌ Not inside a Git repository.")
-    sys.exit(1)
-
-# ==========================================================
-# BOOTSTRAP — NO COMMITS
-# ==========================================================
-if not has_commits():
-    warn("⚠️ No commits found — bootstrapping repository.")
-
-    author_name, author_email = ensure_identity()
-
-    env = os.environ.copy()
-    env["GIT_AUTHOR_NAME"] = author_name
-    env["GIT_AUTHOR_EMAIL"] = author_email
-    env["GIT_COMMITTER_NAME"] = author_name
-    env["GIT_COMMITTER_EMAIL"] = author_email
-
-    run("git add .")
-    subprocess.check_call(["git", "commit", "-m", "Initial commit"], env=env)
-
-    warn("🏷️ Creating initial tag v0.1.0")
-    run('git tag -a v0.1.0 -m "Initial version tag"')
-
-    branch = safe("git rev-parse --abbrev-ref HEAD") or "main"
-    run(f"git push -u origin {branch}")
-    run("git push origin v0.1.0")
-
-    last_tag = "v0.1.0"
-else:
-    last_tag = safe("git describe --tags --abbrev=0")
-    if not last_tag:
-        warn("⚠️ No tags found — creating v0.1.0")
-        run('git tag -a v0.1.0 -m "Initial version tag"')
-        run("git push origin v0.1.0")
-        last_tag = "v0.1.0"
+while True:
+    print(f"\n{BOLD}Identity:{RESET} {name} <{email}> [{source}]")
+    print(f"{BOLD}Version:{RESET} {next_version}")
+    print(f"{BOLD}Model:{RESET}   {model['label']}")
+    print(f"\n{BOLD}Message:{RESET}\n{commit_msg}\n")
+    print("1) Commit & push\n2) Edit identity\n3) Edit message\n4) Cancel")
+    c = input("Choice: ").strip()
+    if c == "1":
+        break
+    if c == "2":
+        name,email = prompt_identity(name,email)
+        run(f'git config user.name "{name}"')
+        run(f'git config user.email "{email}"')
+        source = "repo"
+    if c == "3":
+        print("Enter message (Ctrl+D):")
+        commit_msg = enforce_summary_limit(sys.stdin.read().strip())
+    if c == "4":
+        sys.exit(0)
 
 # ==========================================================
-# VERSION MATH
+# final commit
 # ==========================================================
-sem = semantic(last_tag)
-if not sem:
-    err(f"❌ Existing tag {last_tag} is not semantic.")
-    sys.exit(2)
+env = os.environ.copy()
+env.update({
+    "GIT_AUTHOR_NAME": name,
+    "GIT_AUTHOR_EMAIL": email,
+    "GIT_COMMITTER_NAME": name,
+    "GIT_COMMITTER_EMAIL": email
+})
 
-major, minor, patch = sem
-next_version = f"v{major}.{minor}.{patch+1}"
+ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+final_msg = f"""{commit_msg}
 
-# ==========================================================
-# STAGE + DIFF
-# ==========================================================
-run("git add .")
-changed = safe("git diff --cached --name-only")
-if not changed:
-    err("❌ No staged changes.")
-    sys.exit(3)
-
-diff = safe("git diff --cached --unified=0")
-if len(diff) > 18000:
-    diff = diff[:18000] + "\n...\n[diff truncated]"
-
-# ==========================================================
-# MODEL SELECTION (User Override)
-# ==========================================================
-print(f"{MAGENTA}Available model:{RESET} {DEFAULT_MODEL}")
-model_choice = input(f"{YELLOW}Enter model or leave empty for default:{RESET} ").strip()
-model = model_choice if model_choice else DEFAULT_MODEL
-
-# ==========================================================
-# AI COMMIT MESSAGE
-# ==========================================================
-print(f"{CYAN}🤖 Generating commit message using {model}...{RESET}")
-
-commit_msg = generate_ai_commit_message(model, diff)
-
-# Retry once with fallback
-if commit_msg is None:
-    warn("Retrying with simplified prompt...")
-    commit_msg = generate_ai_commit_message(model, "CHANGES:\n" + diff[:5000])
-
-if commit_msg is None:
-    warn("AI unavailable. Falling back to manual commit message.")
-    commit_msg = input("Enter commit message: ").strip() or "update"
-
-summary = commit_msg.split("\n")[0].strip() or "update"
-title = truncate_summary(summary)
-
-# ==========================================================
-# FINAL COMMIT MESSAGE BUILD
-# ==========================================================
-timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-final_msg = f"""Version: {next_version} — {title}
-Timestamp: {timestamp}
-
-{commit_msg}
+Version: {next_version}
+Timestamp: {ts}
 """
 
-# ==========================================================
-# AUTHOR IDENTITY
-# ==========================================================
-author_name, author_email = ensure_identity()
-
-env = os.environ.copy()
-env["GIT_AUTHOR_NAME"] = author_name
-env["GIT_AUTHOR_EMAIL"] = author_email
-env["GIT_COMMITTER_NAME"] = author_name
-env["GIT_COMMITTER_EMAIL"] = author_email
-
-# ==========================================================
-# WRITE COMMIT, TAG, PUSH
-# ==========================================================
-subprocess.check_call(["git", "commit", "-m", final_msg], env=env)
-
+subprocess.check_call(["git","commit","-m",final_msg], env=env)
 run(f'git tag -a {next_version} -m "{final_msg}"')
 
-branch = safe("git rev-parse --abbrev-ref HEAD") or "main"
+branch = safe("git branch --show-current") or "main"
 run(f"git push -u origin {branch}")
 run(f"git push origin {next_version}")
 
-say(f"🎉 Released {next_version} with model {model}!")
+print(f"{GREEN}Released {next_version}{RESET}")
