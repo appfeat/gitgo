@@ -1,4 +1,4 @@
-# gup
+# gup Release 0.1.0
 
 **gup** (Git Update & Push) is a command-line tool that helps you commit, version, and push Git
 changes safely, with a clear review step and optional AI-assisted commit

@@ -389,7 +389,8 @@ Diff:
         print(f"{CYAN}2){RESET} Edit identity")
         print(f"{CYAN}3){RESET} Edit message")
         print(f"{CYAN}4){RESET} Change AI model & regenerate")
-        print(f"{CYAN}5){RESET} Cancel")
+        print(f"{CYAN}5){RESET} Change version")
+        print(f"{CYAN}6){RESET} Cancel")
 
         c = input(f"{BLUE}Choice: {RESET}").strip()
 
@@ -429,6 +430,20 @@ Diff:
                 git_config_set("gup.message-mode", "ai")
             continue
         if c == "5":
+            info("Enter version (format: vMAJOR.MINOR.PATCH)")
+            v = input(f"{BLUE}Version [{next_version}]: {RESET}").strip()
+            if not v:
+                continue
+            if not re.match(r"^v\d+\.\d+\.\d+$", v):
+                warn("Invalid version format. Use vMAJOR.MINOR.PATCH (e.g. v1.2.3)")
+                continue
+            if tag_exists(v):
+                warn(f"Tag {v} already exists.")
+                continue
+            next_version = v
+            success(f"Version set to {next_version}")
+            continue
+        if c == "6":
             sys.exit(0)
 
     env = os.environ.copy()
