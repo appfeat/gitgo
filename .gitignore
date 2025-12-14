@@ -1,2 +1,76 @@
 .env
 *.pyc
+# ===============================
+# Python bytecode & caches
+# ===============================
+__pycache__/
+*.py[cod]
+*$py.class
+
+# ===============================
+# Virtual environments
+# ===============================
+venv/
+.venv/
+env/
+ENV/
+
+# ===============================
+# Packaging / build artifacts
+# ===============================
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# ===============================
+# Pytest
+# ===============================
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# ===============================
+# Installer / dependency caches
+# ===============================
+pip-log.txt
+pip-delete-this-directory.txt
+
+# ===============================
+# IDE / editor junk
+# ===============================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.bak
+
+# ===============================
+# OS junk
+# ===============================
+.DS_Store
+Thumbs.db
+
+# ===============================
+# Logs / temp files
+# ===============================
+*.log
+*.tmp
+.tmp/
+
+# ===============================
+# Local config & secrets
+# ===============================
+.env
+.env.*
+*.key
+*.pem
+*.crt
+
+# ===============================
+# Project-specific
+# ===============================
+gup.egg-info/
