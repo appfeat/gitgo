@@ -35,14 +35,9 @@ def section(title):
 def kv(k, v):
     print(f"  {BLUE}{k:<8}{RESET}: {WHITE}{v}{RESET}")
 
-def info(msg):
-    print(f"{CYAN}{msg}{RESET}")
-
-def warn(msg):
-    print(f"{YELLOW}{msg}{RESET}")
-
-def success(msg):
-    print(f"{GREEN}{msg}{RESET}")
+def info(msg): print(f"{CYAN}{msg}{RESET}")
+def warn(msg): print(f"{YELLOW}{msg}{RESET}")
+def success(msg): print(f"{GREEN}{msg}{RESET}")
 
 # ==========================================================
 # safe execution (UNCHANGED)
@@ -112,7 +107,7 @@ def enforce_summary_limit(msg, limit=72):
     return "\n".join(lines)
 
 # ==========================================================
-# identity (UNCHANGED LOGIC)
+# identity (UNCHANGED)
 # ==========================================================
 def read_identity():
     n = git_config("user.name")
@@ -152,9 +147,7 @@ def show_repo_dashboard():
     kv("Timeout", f"{timeout}s" if timeout else "(default)")
 
     section("REPO")
-    branch = safe(["git", "branch", "--show-current"]) or "(detached)"
-    kv("Branch", branch)
-
+    kv("Branch", safe(["git", "branch", "--show-current"]) or "(detached)")
     tag = safe(["git", "describe", "--tags", "--abbrev=0"])
     if tag:
         kv("Tag", tag)
@@ -162,29 +155,26 @@ def show_repo_dashboard():
     section("REMOTES")
     remotes = safe(["git", "remote", "-v"])
     if remotes:
-        for line in remotes.splitlines():
-            print(f"  {WHITE}{line}{RESET}")
+        for l in remotes.splitlines():
+            print(f"  {WHITE}{l}{RESET}")
     else:
         kv("None", "-")
 
     section("WORKING TREE")
-    clean = not safe(["git", "status", "--short"])
-    kv("Status", "CLEAN" if clean else "DIRTY")
+    kv("Status", "CLEAN" if not safe(["git", "status", "--short"]) else "DIRTY")
 
     section("RECENT COMMITS")
-    commits = safe(
-        ["git", "log", "-3", "--pretty=format:%h | %ad | %s", "--date=short"]
-    )
-    if commits:
-        for line in commits.splitlines():
-            print(f"  {WHITE}{line}{RESET}")
+    log = safe(["git", "log", "-3", "--pretty=format:%h | %ad | %s", "--date=short"])
+    if log:
+        for l in log.splitlines():
+            print(f"  {WHITE}{l}{RESET}")
     else:
         kv("None", "-")
 
     print(SEP)
 
 # ==========================================================
-# models (UNCHANGED LOGIC, COSMETIC OUTPUT)
+# models (UNCHANGED LOGIC)
 # ==========================================================
 def list_llm_models():
     out = safe(["llm", "models"])
@@ -257,7 +247,7 @@ if not files:
     sys.exit(0)
 
 # ==========================================================
-# model + timeout (UNCHANGED)
+# model + timeout (UNCHANGED + RESTORED LATER)
 # ==========================================================
 models = list_llm_models()
 model_id = git_config("gup.model")
@@ -315,7 +305,7 @@ if ai_warning:
     warn(f"Model: {model['id']} | Timeout: {timeout}s\n")
 
 # ==========================================================
-# review loop (COSMETIC ONLY)
+# review loop (RESTORED OPTION)
 # ==========================================================
 while True:
     header("GUP :: REVIEW")
@@ -335,7 +325,8 @@ while True:
     print(f"{CYAN}1){RESET} Commit & push")
     print(f"{CYAN}2){RESET} Edit identity")
     print(f"{CYAN}3){RESET} Edit message")
-    print(f"{CYAN}4){RESET} Cancel")
+    print(f"{CYAN}4){RESET} Change model & timeout (regenerate)")
+    print(f"{CYAN}5){RESET} Cancel")
 
     c = input(f"{BLUE}Choice: {RESET}").strip()
 
@@ -350,6 +341,14 @@ while True:
         info("Enter commit message (Ctrl+D):")
         commit_msg = enforce_summary_limit(sys.stdin.read().strip())
     if c == "4":
+        model = pick_model(models)
+        git_config_set("gup.model", model["id"])
+        timeout = clamp_timeout(input(f"{BLUE}Timeout seconds (1–60) [{timeout}]: {RESET}") or timeout)
+        git_config_set("gup.timeout", timeout)
+        commit_msg, ai_warning = generate_message()
+        if ai_warning:
+            warn(f"\n⚠ AI regeneration failed: {ai_warning}\n")
+    if c == "5":
         sys.exit(0)
 
 # ==========================================================
@@ -378,4 +377,3 @@ run(["git", "push", "-u", "origin", branch])
 run(["git", "push", "origin", next_version])
 
 success(f"Released {next_version}")
-
