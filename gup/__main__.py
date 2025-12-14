@@ -222,69 +222,55 @@ def wait_with_countdown(proc, timeout):
     return False
 
 # ==========================================================
-# repo check (UNCHANGED)
+# MAIN EXECUTION
 # ==========================================================
-if safe(["git", "rev-parse", "--is-inside-work-tree"]) != "true":
-    warn("Not inside a Git repository.")
-    sys.exit(1)
+def main():
+    if safe(["git", "rev-parse", "--is-inside-work-tree"]) != "true":
+        warn("Not inside a Git repository.")
+        sys.exit(1)
 
-bootstrap = not has_commits()
+    bootstrap = not has_commits()
 
-if not bootstrap and not safe(["git", "status", "--porcelain"]):
-    info("Nothing to commit.")
-    show_repo_dashboard()
-    sys.exit(0)
+    if not bootstrap and not safe(["git", "status", "--porcelain"]):
+        info("Nothing to commit.")
+        show_repo_dashboard()
+        sys.exit(0)
 
-# ==========================================================
-# version (UNCHANGED)
-# ==========================================================
-last = "v0.0.0" if bootstrap else safe(["git", "describe", "--tags", "--abbrev=0"]) or "v0.0.0"
-m = re.match(r"v(\d+)\.(\d+)\.(\d+)", last)
-major, minor, patch = map(int, m.groups()) if m else (0, 0, 0)
-next_version = next_free_version(major, minor, patch)
+    last = "v0.0.0" if bootstrap else safe(["git", "describe", "--tags", "--abbrev=0"]) or "v0.0.0"
+    m = re.match(r"v(\d+)\.(\d+)\.(\d+)", last)
+    major, minor, patch = map(int, m.groups()) if m else (0, 0, 0)
+    next_version = next_free_version(major, minor, patch)
 
-# ==========================================================
-# identity (UNCHANGED)
-# ==========================================================
-name, email, source = read_identity()
-if source == "none":
-    name, email = prompt_identity("", "")
-    source = "prompted"
+    name, email, source = read_identity()
+    if source == "none":
+        name, email = prompt_identity("", "")
+        source = "prompted"
 
-# ==========================================================
-# stage (UNCHANGED)
-# ==========================================================
-run(["git", "add", "."])
-files = safe(["git", "diff", "--cached", "--name-only"]).splitlines()
-if not files:
-    info("No staged changes.")
-    show_repo_dashboard()
-    sys.exit(0)
+    run(["git", "add", "."])
+    files = safe(["git", "diff", "--cached", "--name-only"]).splitlines()
+    if not files:
+        info("No staged changes.")
+        show_repo_dashboard()
+        sys.exit(0)
 
-# ==========================================================
-# model + timeout (UNCHANGED)
-# ==========================================================
-models = list_llm_models()
-model_id = git_config("gup.model")
-timeout = clamp_timeout(git_config("gup.timeout"))
+    models = list_llm_models()
+    model_id = git_config("gup.model")
+    timeout = clamp_timeout(git_config("gup.timeout"))
 
-model = next((m for m in models if m["id"] == model_id), None)
-if not model:
-    model = pick_model(models)
-    git_config_set("gup.model", model["id"])
+    model = next((m for m in models if m["id"] == model_id), None)
+    if not model:
+        model = pick_model(models)
+        git_config_set("gup.model", model["id"])
 
-# ==========================================================
-# commit message generation (WITH COUNTDOWN)
-# ==========================================================
-commit_msg = (
-    "Initial commit" if bootstrap else
-    "Update project configuration" if len(files) == 1 else
-    f"Update {len(files)} project files"
-)
+    commit_msg = (
+        "Initial commit" if bootstrap else
+        "Update project configuration" if len(files) == 1 else
+        f"Update {len(files)} project files"
+    )
 
-def generate_message():
-    diff = safe(["git", "diff", "--cached", "--unified=0"])[:15000]
-    prompt = f"""Improve this Git commit message.
+    def generate_message():
+        diff = safe(["git", "diff", "--cached", "--unified=0"])[:15000]
+        prompt = f"""Improve this Git commit message.
 
 Rules:
 - FIRST line ≤ 72 characters.
@@ -296,106 +282,103 @@ Current message:
 Diff:
 {diff}
 """
-    try:
-        p = subprocess.Popen(
-            ["llm", "-m", model["id"], prompt],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
+        try:
+            p = subprocess.Popen(
+                ["llm", "-m", model["id"], prompt],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
 
-        completed = wait_with_countdown(p, timeout)
-        print("\r" + " " * 80 + "\r", end="", flush=True)
+            completed = wait_with_countdown(p, timeout)
+            print("\r" + " " * 80 + "\r", end="", flush=True)
 
-        if not completed:
-            p.kill()
-            return commit_msg, "AI request timed out"
+            if not completed:
+                p.kill()
+                return commit_msg, "AI request timed out"
 
-        out, err = p.communicate()
-        if out.strip():
-            return enforce_summary_limit(out.strip()), None
-        return commit_msg, err.strip() or "AI returned empty output"
+            out, err = p.communicate()
+            if out.strip():
+                return enforce_summary_limit(out.strip()), None
+            return commit_msg, err.strip() or "AI returned empty output"
 
-    except Exception as e:
-        return commit_msg, str(e)
+        except Exception as e:
+            return commit_msg, str(e)
 
-commit_msg, ai_warning = generate_message()
+    commit_msg, ai_warning = generate_message()
 
-if ai_warning:
-    warn("\n⚠ AI commit message generation failed")
-    warn(f"Reason: {ai_warning}")
-    warn(f"Model: {model['id']} | Timeout: {timeout}s\n")
+    if ai_warning:
+        warn("\n⚠ AI commit message generation failed")
+        warn(f"Reason: {ai_warning}")
+        warn(f"Model: {model['id']} | Timeout: {timeout}s\n")
 
-# ==========================================================
-# review loop (UNCHANGED + RESTORED)
-# ==========================================================
-while True:
-    header("GUP :: REVIEW")
+    while True:
+        header("GUP :: REVIEW")
 
-    section("IDENTITY")
-    kv("Name", name)
-    kv("Email", email)
-    kv("Source", source)
+        section("IDENTITY")
+        kv("Name", name)
+        kv("Email", email)
+        kv("Source", source)
 
-    section("RELEASE")
-    kv("Version", next_version)
-    kv("Model", f"{model['id']} ({timeout}s)")
+        section("RELEASE")
+        kv("Version", next_version)
+        kv("Model", f"{model['id']} ({timeout}s)")
 
-    section("MESSAGE")
-    print(f"\n{WHITE}{commit_msg}{RESET}\n")
+        section("MESSAGE")
+        print(f"\n{WHITE}{commit_msg}{RESET}\n")
 
-    print(f"{CYAN}1){RESET} Commit & push")
-    print(f"{CYAN}2){RESET} Edit identity")
-    print(f"{CYAN}3){RESET} Edit message")
-    print(f"{CYAN}4){RESET} Change model & timeout (regenerate)")
-    print(f"{CYAN}5){RESET} Cancel")
+        print(f"{CYAN}1){RESET} Commit & push")
+        print(f"{CYAN}2){RESET} Edit identity")
+        print(f"{CYAN}3){RESET} Edit message")
+        print(f"{CYAN}4){RESET} Change model & timeout (regenerate)")
+        print(f"{CYAN}5){RESET} Cancel")
 
-    c = input(f"{BLUE}Choice: {RESET}").strip()
+        c = input(f"{BLUE}Choice: {RESET}").strip()
 
-    if c == "1":
-        break
-    if c == "2":
-        name, email = prompt_identity(name, email)
-        git_config_set("user.name", name)
-        git_config_set("user.email", email)
-        source = "repo"
-    if c == "3":
-        info("Enter commit message (Ctrl+D):")
-        commit_msg = enforce_summary_limit(sys.stdin.read().strip())
-    if c == "4":
-        model = pick_model(models)
-        git_config_set("gup.model", model["id"])
-        timeout = clamp_timeout(input(f"{BLUE}Timeout seconds (1–60) [{timeout}]: {RESET}") or timeout)
-        git_config_set("gup.timeout", timeout)
-        commit_msg, ai_warning = generate_message()
-        if ai_warning:
-            warn(f"\n⚠ AI regeneration failed: {ai_warning}\n")
-    if c == "5":
-        sys.exit(0)
+        if c == "1":
+            break
+        if c == "2":
+            name, email = prompt_identity(name, email)
+            git_config_set("user.name", name)
+            git_config_set("user.email", email)
+            source = "repo"
+        if c == "3":
+            info("Enter commit message (Ctrl+D):")
+            commit_msg = enforce_summary_limit(sys.stdin.read().strip())
+        if c == "4":
+            model = pick_model(models)
+            git_config_set("gup.model", model["id"])
+            timeout = clamp_timeout(input(f"{BLUE}Timeout seconds (1–60) [{timeout}]: {RESET}") or timeout)
+            git_config_set("gup.timeout", timeout)
+            commit_msg, ai_warning = generate_message()
+            if ai_warning:
+                warn(f"\n⚠ AI regeneration failed: {ai_warning}\n")
+        if c == "5":
+            sys.exit(0)
 
-# ==========================================================
-# final commit (UNCHANGED)
-# ==========================================================
-env = os.environ.copy()
-env.update({
-    "GIT_AUTHOR_NAME": name,
-    "GIT_AUTHOR_EMAIL": email,
-    "GIT_COMMITTER_NAME": name,
-    "GIT_COMMITTER_EMAIL": email
-})
+    env = os.environ.copy()
+    env.update({
+        "GIT_AUTHOR_NAME": name,
+        "GIT_AUTHOR_EMAIL": email,
+        "GIT_COMMITTER_NAME": name,
+        "GIT_COMMITTER_EMAIL": email
+    })
 
-ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-final_msg = f"""{commit_msg}
+    ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    final_msg = f"""{commit_msg}
 
 Version: {next_version}
 Timestamp: {ts}
 """
 
-subprocess.check_call(["git", "commit", "-m", final_msg], env=env)
-subprocess.check_call(["git", "tag", "-a", next_version, "-m", final_msg])
+    subprocess.check_call(["git", "commit", "-m", final_msg], env=env)
+    subprocess.check_call(["git", "tag", "-a", next_version, "-m", final_msg])
 
-branch = safe(["git", "branch", "--show-current"]) or "main"
-run(["git", "push", "-u", "origin", branch])
-run(["git", "push", "origin", next_version])
+    branch = safe(["git", "branch", "--show-current"]) or "main"
+    run(["git", "push", "-u", "origin", branch])
+    run(["git", "push", "origin", next_version])
 
-success(f"Released {next_version}")
+    success(f"Released {next_version}")
+
+if __name__ == "__main__":
+    main()

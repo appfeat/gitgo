@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gup"
+version = "1.0.0"
+description = "A safe Git commit, versioning, and push helper with AI-assisted messages"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [
+    { name = "appfeat" }
+]
+keywords = ["git", "cli", "commit", "versioning", "ai"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "License :: OSI Approved :: MIT License",
+    "Environment :: Console",
+    "Topic :: Software Development :: Version Control :: Git",
+]
+
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/appfeat/gup"
+Repository = "https://github.com/appfeat/gup"
+Issues = "https://github.com/appfeat/gup/issues"
+
+[project.scripts]
+gup = "gup.__main__:main"

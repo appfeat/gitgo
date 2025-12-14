@@ -1,4 +1,5 @@
 import gup
+import gup.__main__ as impl
 
 def test_list_llm_models(monkeypatch):
     fake_output = """
@@ -8,7 +9,7 @@ openai:gpt-4.1-mini
 invalid model name
 """
 
-    monkeypatch.setattr(gup, "safe", lambda _: fake_output)
+    monkeypatch.setattr(impl, "safe", lambda _: fake_output)
 
     models = gup.list_llm_models()
     ids = [m["id"] for m in models]
@@ -16,4 +17,3 @@ invalid model name
     assert "gpt-4.1" in ids
     assert "gpt-4.1-mini" in ids
     assert all(" " not in i for i in ids)
-
