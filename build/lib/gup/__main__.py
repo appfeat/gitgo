@@ -6,7 +6,6 @@ import re
 import datetime
 import string
 import time
-import shutil
 
 # ==========================================================
 # TRON COLOR THEME (COSMETIC ONLY)
@@ -78,8 +77,7 @@ def git_config(key):
     return safe(["git", "config", key])
 
 def git_config_set(key, value):
-    run(["git", "config", "--local", key, value])
-
+    run(["git", "config", key, value])
 
 def tag_exists(tag):
     return subprocess.call(
@@ -177,11 +175,8 @@ def show_repo_dashboard():
     print(SEP)
 
 # ==========================================================
-# LLM helpers
+# models
 # ==========================================================
-def has_llm():
-    return shutil.which("llm") is not None
-
 def list_llm_models():
     out = safe(["llm", "models"])
     models = []
@@ -189,10 +184,11 @@ def list_llm_models():
         line = line.strip()
         if not line or line.endswith(":"):
             continue
+        label = line
         core = line.split("(", 1)[0].strip()
         model_id = core.split(":")[-1].strip()
         if is_printable_no_space(model_id):
-            models.append({"id": model_id, "label": line})
+            models.append({"id": model_id, "label": label})
     return models
 
 def pick_model(models):
@@ -206,8 +202,6 @@ def pick_model(models):
         for i, m in enumerate(models, 1):
             print(f"  {CYAN}{i}){RESET} {WHITE}{m['label']}{RESET}")
         sel = input(f"{BLUE}Select model: {RESET}").strip()
-        if not sel or not sel.isdigit():
-            return models[0]
         return models[int(sel) - 1]
     if c.isdigit() and int(c) in (1, 2):
         return models[int(c) - 1]
@@ -235,7 +229,7 @@ def main():
         warn("Not inside a Git repository.")
         sys.exit(1)
 
-    # --- ensure local branch is up to date ---
+    # --- NEW: ensure local branch is up to date ---
     branch = safe(["git", "branch", "--show-current"])
     upstream = safe(["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
 
@@ -255,6 +249,7 @@ def main():
             else:
                 warn("Aborted due to out-of-date branch.")
                 sys.exit(1)
+    # --- END NEW LOGIC ---
 
     bootstrap = not has_commits()
 
@@ -280,97 +275,65 @@ def main():
         show_repo_dashboard()
         sys.exit(0)
 
-    message_mode = git_config("gup.message-mode") or "ai"
-    commit_msg = None
+    models = list_llm_models()
+    model_id = git_config("gup.model")
+    timeout = clamp_timeout(git_config("gup.timeout"))
 
-    # ---------- MANUAL MODE ----------
-    if message_mode == "manual":
-        info("Manual commit message mode (press 'a' to switch to AI).")
-        msg = input(f"{BLUE}Commit message: {RESET}").strip()
-        if msg.lower() != "a":
-            commit_msg = enforce_summary_limit(msg)
-            git_config_set("gup.message-mode", "manual")
-        else:
-            message_mode = "ai"
+    model = next((m for m in models if m["id"] == model_id), None)
+    if not model:
+        model = pick_model(models)
+        git_config_set("gup.model", model["id"])
 
-    # ---------- AI MODE ----------
-    if message_mode == "ai":
-        if not has_llm():
-            warn("AI commit messages require the 'llm' tool.")
-            warn("Install with: pip install llm")
-            warn("Then configure at least one model.")
-            commit_msg = enforce_summary_limit(input(f"{BLUE}Commit message: {RESET}").strip())
-            git_config_set("gup.message-mode", "manual")
-        else:
-            models = list_llm_models()
-            if not models:
-                warn("No LLM models available.")
-                warn("Configure models using the 'llm' tool.")
-                commit_msg = enforce_summary_limit(input(f"{BLUE}Commit message: {RESET}").strip())
-                git_config_set("gup.message-mode", "manual")
-            else:
-                model_id = git_config("gup.model")
-                timeout = clamp_timeout(git_config("gup.timeout"))
-                model = next((m for m in models if m["id"] == model_id), models[0])
+    commit_msg = (
+        "Initial commit" if bootstrap else
+        "Update project configuration" if len(files) == 1 else
+        f"Update {len(files)} project files"
+    )
 
-                def generate_message():
-                    diff = safe(["git", "diff", "--cached", "--unified=0"])[:15000]
-                    prompt = f"""Improve this Git commit message.
+    def generate_message():
+        diff = safe(["git", "diff", "--cached", "--unified=0"])[:15000]
+        prompt = f"""Improve this Git commit message.
 
 Rules:
 - FIRST line ≤ 72 characters.
 - Do NOT invent details.
 
+Current message:
+{commit_msg}
+
 Diff:
 {diff}
 """
-                    try:
-                        p = subprocess.Popen(
-                            ["llm", "-m", model["id"], prompt],
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE,
-                            text=True
-                        )
-                        completed = wait_with_countdown(p, timeout)
-                        print("\r" + " " * 80 + "\r", end="", flush=True)
-                        if not completed:
-                            p.kill()
-                            return None, "AI request timed out"
-                        out, err = p.communicate()
-                        if out.strip():
-                            return enforce_summary_limit(out.strip()), None
-                        return None, err.strip() or "AI returned empty output"
-                    except Exception as e:
-                        return None, str(e)
+        try:
+            p = subprocess.Popen(
+                ["llm", "-m", model["id"], prompt],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
 
-                commit_msg, ai_warning = generate_message()
+            completed = wait_with_countdown(p, timeout)
+            print("\r" + " " * 80 + "\r", end="", flush=True)
 
-                if ai_warning:
-                    warn(f"\n⚠ AI failed: {ai_warning}")
-                    print(f"{CYAN}1){RESET} Manual message")
-                    print(f"{CYAN}2){RESET} Select another model")
-                    print(f"{CYAN}3){RESET} Cancel")
-                    c = input(f"{BLUE}Choice: {RESET}").strip()
+            if not completed:
+                p.kill()
+                return commit_msg, "AI request timed out"
 
-                    if c == "1":
-                        commit_msg = enforce_summary_limit(input(f"{BLUE}Commit message: {RESET}").strip())
-                        git_config_set("gup.message-mode", "manual")
-                    elif c == "2":
-                        model = pick_model(models)
-                        git_config_set("gup.model", model["id"])
-                        commit_msg, ai_warning = generate_message()
-                        if ai_warning:
-                            warn(f"AI failed again: {ai_warning}")
-                            commit_msg = enforce_summary_limit(input(f"{BLUE}Commit message: {RESET}").strip())
-                            git_config_set("gup.message-mode", "manual")
-                        else:
-                            git_config_set("gup.message-mode", "ai")
-                    else:
-                        sys.exit(0)
-                else:
-                    git_config_set("gup.message-mode", "ai")
+            out, err = p.communicate()
+            if out.strip():
+                return enforce_summary_limit(out.strip()), None
+            return commit_msg, err.strip() or "AI returned empty output"
 
-    # ---------- REVIEW LOOP ----------
+        except Exception as e:
+            return commit_msg, str(e)
+
+    commit_msg, ai_warning = generate_message()
+
+    if ai_warning:
+        warn("\n⚠ AI commit message generation failed")
+        warn(f"Reason: {ai_warning}")
+        warn(f"Model: {model['id']} | Timeout: {timeout}s\n")
+
     while True:
         header("GUP :: REVIEW")
 
@@ -381,6 +344,7 @@ Diff:
 
         section("RELEASE")
         kv("Version", next_version)
+        kv("Model", f"{model['id']} ({timeout}s)")
 
         section("MESSAGE")
         print(f"\n{WHITE}{commit_msg}{RESET}\n")
@@ -388,7 +352,8 @@ Diff:
         print(f"{CYAN}1){RESET} Commit & push")
         print(f"{CYAN}2){RESET} Edit identity")
         print(f"{CYAN}3){RESET} Edit message")
-        print(f"{CYAN}4){RESET} Cancel")
+        print(f"{CYAN}4){RESET} Change model & timeout (regenerate)")
+        print(f"{CYAN}5){RESET} Cancel")
 
         c = input(f"{BLUE}Choice: {RESET}").strip()
 
@@ -403,6 +368,14 @@ Diff:
             info("Enter commit message (Ctrl+D):")
             commit_msg = enforce_summary_limit(sys.stdin.read().strip())
         if c == "4":
+            model = pick_model(models)
+            git_config_set("gup.model", model["id"])
+            timeout = clamp_timeout(input(f"{BLUE}Timeout seconds (1–60) [{timeout}]: {RESET}") or timeout)
+            git_config_set("gup.timeout", timeout)
+            commit_msg, ai_warning = generate_message()
+            if ai_warning:
+                warn(f"\n⚠ AI regeneration failed: {ai_warning}\n")
+        if c == "5":
             sys.exit(0)
 
     env = os.environ.copy()
