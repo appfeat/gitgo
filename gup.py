@@ -6,10 +6,47 @@ import re
 import datetime
 import string
 
-BLUE="\033[34m"; GREEN="\033[32m"; YELLOW="\033[33m"
-CYAN="\033[36m"; BOLD="\033[1m"; RESET="\033[0m"
+# ==========================================================
+# TRON COLOR THEME (COSMETIC ONLY)
+# ==========================================================
+RESET   = "\033[0m"
+DIM     = "\033[2m"
+BOLD    = "\033[1m"
 
-# ---------------- safe execution ----------------
+CYAN    = "\033[36m"
+CYAN_B  = "\033[96m"
+BLUE    = "\033[34m"
+WHITE   = "\033[37m"
+GREEN   = "\033[92m"
+YELLOW  = "\033[93m"
+RED     = "\033[91m"
+
+SEP = f"{CYAN}{DIM}" + "━" * 48 + RESET
+
+def header(title):
+    print()
+    print(SEP)
+    print(f"{CYAN_B}{BOLD}▣ {title}{RESET}")
+    print(SEP)
+
+def section(title):
+    print(f"\n{CYAN_B}{BOLD}{title}{RESET}")
+
+def kv(k, v):
+    print(f"  {BLUE}{k:<8}{RESET}: {WHITE}{v}{RESET}")
+
+def info(msg):
+    print(f"{CYAN}{msg}{RESET}")
+
+def warn(msg):
+    print(f"{YELLOW}{msg}{RESET}")
+
+def success(msg):
+    print(f"{GREEN}{msg}{RESET}")
+
+# ==========================================================
+# safe execution (UNCHANGED)
+# ==========================================================
 def run(argv, capture=False, env=None, timeout=None):
     if capture:
         return subprocess.check_output(argv, text=True, env=env, timeout=timeout).strip()
@@ -21,7 +58,9 @@ def safe(argv):
     except Exception:
         return ""
 
-# ---------------- validation ----------------
+# ==========================================================
+# validation (UNCHANGED)
+# ==========================================================
 def is_printable_no_space(s):
     return s and all(c in string.printable and not c.isspace() for c in s)
 
@@ -32,7 +71,9 @@ def clamp_timeout(val, default="12"):
     except Exception:
         return default
 
-# ---------------- git helpers ----------------
+# ==========================================================
+# git helpers (UNCHANGED)
+# ==========================================================
 def has_commits():
     return bool(safe(["git", "rev-parse", "--verify", "HEAD"]))
 
@@ -54,7 +95,9 @@ def next_free_version(major, minor, patch):
             return candidate
         patch += 1
 
-# ---------------- summary enforcement ----------------
+# ==========================================================
+# summary enforcement (UNCHANGED)
+# ==========================================================
 def enforce_summary_limit(msg, limit=72):
     lines = msg.strip().splitlines()
     if not lines:
@@ -68,7 +111,9 @@ def enforce_summary_limit(msg, limit=72):
     lines[0] = cut
     return "\n".join(lines)
 
-# ---------------- identity ----------------
+# ==========================================================
+# identity (UNCHANGED LOGIC)
+# ==========================================================
 def read_identity():
     n = git_config("user.name")
     e = git_config("user.email")
@@ -81,51 +126,66 @@ def read_identity():
     return "", "", "none"
 
 def prompt_identity(n, e):
-    print("\nEnter commit identity (blank keeps current):")
+    info("\nEnter commit identity (blank keeps current):")
     return (
-        input(f"Name [{n}]: ").strip() or n,
-        input(f"Email [{e}]: ").strip() or e,
+        input(f"{BLUE}Name [{n}]: {RESET}").strip() or n,
+        input(f"{BLUE}Email [{e}]: {RESET}").strip() or e,
     )
 
-# ---------------- dashboard ----------------
+# ==========================================================
+# dashboard (COSMETIC ONLY)
+# ==========================================================
 def show_repo_dashboard():
     name, email, source = read_identity()
     model = git_config("gup.model")
     timeout = git_config("gup.timeout")
 
-    print("\nRepository status")
-    print("────────────────────────────────")
+    header("GUP :: REPOSITORY STATUS")
 
-    print("Identity:")
-    print(f"  Name:   {name or '(not set)'}")
-    print(f"  Email:  {email or '(not set)'}")
-    print(f"  Source: {source}")
+    section("IDENTITY")
+    kv("Name", name or "(not set)")
+    kv("Email", email or "(not set)")
+    kv("Source", source)
 
-    print("\nAI:")
-    print(f"  Model:   {model or '(not set)'}")
-    print(f"  Timeout: {timeout + 's' if timeout else '(default)'}")
+    section("AI CONFIG")
+    kv("Model", model or "(not set)")
+    kv("Timeout", f"{timeout}s" if timeout else "(default)")
 
+    section("REPO")
     branch = safe(["git", "branch", "--show-current"]) or "(detached)"
-    print(f"\nBranch:     {branch}")
+    kv("Branch", branch)
 
     tag = safe(["git", "describe", "--tags", "--abbrev=0"])
     if tag:
-        print(f"Latest tag: {tag}")
+        kv("Tag", tag)
 
-    print("\nRemotes:")
-    print(safe(["git", "remote", "-v"]) or "  (none)")
+    section("REMOTES")
+    remotes = safe(["git", "remote", "-v"])
+    if remotes:
+        for line in remotes.splitlines():
+            print(f"  {WHITE}{line}{RESET}")
+    else:
+        kv("None", "-")
 
-    print("\nWorking tree:")
-    print("✔ Clean" if not safe(["git", "status", "--short"]) else safe(["git", "status", "--short"]))
+    section("WORKING TREE")
+    clean = not safe(["git", "status", "--short"])
+    kv("Status", "CLEAN" if clean else "DIRTY")
 
-    print("\nRecent commits:")
-    print(
-        safe(["git", "log", "-3", "--pretty=format:%h | %ad | %s", "--date=short"])
-        or "  (no commits yet)"
+    section("RECENT COMMITS")
+    commits = safe(
+        ["git", "log", "-3", "--pretty=format:%h | %ad | %s", "--date=short"]
     )
-    print()
+    if commits:
+        for line in commits.splitlines():
+            print(f"  {WHITE}{line}{RESET}")
+    else:
+        kv("None", "-")
 
-# ---------------- models ----------------
+    print(SEP)
+
+# ==========================================================
+# models (UNCHANGED LOGIC, COSMETIC OUTPUT)
+# ==========================================================
 def list_llm_models():
     out = safe(["llm", "models"])
     models = []
@@ -141,37 +201,37 @@ def list_llm_models():
     return models
 
 def pick_model(models):
-    print("\nAI model:")
+    section("AI MODEL SELECTION")
     for i, m in enumerate(models[:2], 1):
-        print(f" {i}) {m['label']}")
-    print(" 3) More models...")
+        print(f"  {CYAN}{i}){RESET} {WHITE}{m['label']}{RESET}")
+    print(f"  {CYAN}3){RESET} {WHITE}More models…{RESET}")
 
-    c = input("Select model [1]: ").strip()
+    c = input(f"{BLUE}Select model [1]: {RESET}").strip()
     if c == "3":
         for i, m in enumerate(models, 1):
-            print(f" {i}) {m['label']}")
-        sel = input("Select model: ").strip()
+            print(f"  {CYAN}{i}){RESET} {WHITE}{m['label']}{RESET}")
+        sel = input(f"{BLUE}Select model: {RESET}").strip()
         return models[int(sel) - 1]
     if c.isdigit() and int(c) in (1, 2):
         return models[int(c) - 1]
     return models[0]
 
 # ==========================================================
-# repo check
+# repo check (UNCHANGED)
 # ==========================================================
 if safe(["git", "rev-parse", "--is-inside-work-tree"]) != "true":
-    print("Not inside a Git repository.")
+    warn("Not inside a Git repository.")
     sys.exit(1)
 
 bootstrap = not has_commits()
 
 if not bootstrap and not safe(["git", "status", "--porcelain"]):
-    print("Nothing to commit.")
+    info("Nothing to commit.")
     show_repo_dashboard()
     sys.exit(0)
 
 # ==========================================================
-# version
+# version (UNCHANGED)
 # ==========================================================
 last = "v0.0.0" if bootstrap else safe(["git", "describe", "--tags", "--abbrev=0"]) or "v0.0.0"
 m = re.match(r"v(\d+)\.(\d+)\.(\d+)", last)
@@ -179,7 +239,7 @@ major, minor, patch = map(int, m.groups()) if m else (0, 0, 0)
 next_version = next_free_version(major, minor, patch)
 
 # ==========================================================
-# identity
+# identity (UNCHANGED)
 # ==========================================================
 name, email, source = read_identity()
 if source == "none":
@@ -187,17 +247,17 @@ if source == "none":
     source = "prompted"
 
 # ==========================================================
-# stage
+# stage (UNCHANGED)
 # ==========================================================
 run(["git", "add", "."])
 files = safe(["git", "diff", "--cached", "--name-only"]).splitlines()
 if not files:
-    print("No staged changes.")
+    info("No staged changes.")
     show_repo_dashboard()
     sys.exit(0)
 
 # ==========================================================
-# model + timeout
+# model + timeout (UNCHANGED)
 # ==========================================================
 models = list_llm_models()
 model_id = git_config("gup.model")
@@ -209,7 +269,7 @@ if not model:
     git_config_set("gup.model", model["id"])
 
 # ==========================================================
-# commit message generation
+# commit message generation (UNCHANGED)
 # ==========================================================
 commit_msg = (
     "Initial commit" if bootstrap else
@@ -250,23 +310,34 @@ Diff:
 commit_msg, ai_warning = generate_message()
 
 if ai_warning:
-    print(f"\n{YELLOW}⚠️ AI commit message generation failed{RESET}")
-    print(f"{YELLOW}   Reason: {ai_warning}{RESET}")
-    print(f"{YELLOW}   Model: {model['id']}, Timeout: {timeout}s{RESET}\n")
+    warn("\n⚠ AI commit message generation failed")
+    warn(f"Reason: {ai_warning}")
+    warn(f"Model: {model['id']} | Timeout: {timeout}s\n")
 
 # ==========================================================
-# review loop
+# review loop (COSMETIC ONLY)
 # ==========================================================
 while True:
-    print(f"\n{BOLD}Identity:{RESET} {name} <{email}> [{source}]")
-    print(f"{BOLD}Version:{RESET}  {next_version}")
-    print(f"{BOLD}Model:{RESET}    {model['id']} ({timeout}s)")
-    print(f"\n{BOLD}Message:{RESET}\n{commit_msg}\n")
-    print("1) Commit & push")
-    print("2) Edit identity")
-    print("3) Edit message")
-    print("4) Cancel")
-    c = input("Choice: ").strip()
+    header("GUP :: REVIEW")
+
+    section("IDENTITY")
+    kv("Name", name)
+    kv("Email", email)
+    kv("Source", source)
+
+    section("RELEASE")
+    kv("Version", next_version)
+    kv("Model", f"{model['id']} ({timeout}s)")
+
+    section("MESSAGE")
+    print(f"\n{WHITE}{commit_msg}{RESET}\n")
+
+    print(f"{CYAN}1){RESET} Commit & push")
+    print(f"{CYAN}2){RESET} Edit identity")
+    print(f"{CYAN}3){RESET} Edit message")
+    print(f"{CYAN}4){RESET} Cancel")
+
+    c = input(f"{BLUE}Choice: {RESET}").strip()
 
     if c == "1":
         break
@@ -276,13 +347,13 @@ while True:
         git_config_set("user.email", email)
         source = "repo"
     if c == "3":
-        print("Enter message (Ctrl+D):")
+        info("Enter commit message (Ctrl+D):")
         commit_msg = enforce_summary_limit(sys.stdin.read().strip())
     if c == "4":
         sys.exit(0)
 
 # ==========================================================
-# final commit
+# final commit (UNCHANGED)
 # ==========================================================
 env = os.environ.copy()
 env.update({
@@ -306,4 +377,5 @@ branch = safe(["git", "branch", "--show-current"]) or "main"
 run(["git", "push", "-u", "origin", branch])
 run(["git", "push", "origin", next_version])
 
-print(f"{GREEN}Released {next_version}{RESET}")
+success(f"Released {next_version}")
+
