@@ -5,18 +5,14 @@ import os
 import re
 import datetime
 
-# ==========================================================
-# gup — final, boring, trustworthy (dashboard enriched)
-# ==========================================================
-
 BLUE="\033[34m"; GREEN="\033[32m"; YELLOW="\033[33m"
 CYAN="\033[36m"; BOLD="\033[1m"; RESET="\033[0m"
 
 # ---------------- helpers ----------------
-def run(cmd, capture=False, env=None):
+def run(cmd, capture=False):
     if capture:
-        return subprocess.check_output(cmd, shell=True, text=True, env=env).strip()
-    subprocess.check_call(cmd, shell=True, env=env)
+        return subprocess.check_output(cmd, shell=True, text=True).strip()
+    subprocess.check_call(cmd, shell=True)
 
 def safe(cmd):
     try:
@@ -31,10 +27,10 @@ def enforce_summary_limit(msg, limit=72):
     lines = msg.strip().splitlines()
     if not lines:
         return msg
-    summary = lines[0]
-    if len(summary) <= limit:
+    s = lines[0]
+    if len(s) <= limit:
         return msg
-    cut = summary[:limit]
+    cut = s[:limit]
     if " " in cut:
         cut = cut.rsplit(" ", 1)[0]
     lines[0] = cut
@@ -63,36 +59,35 @@ def prompt_identity(n, e):
 def show_repo_dashboard():
     name, email, source = read_identity()
     model = safe("git config gup.model")
+    timeout = safe("git config gup.timeout")
 
     print("\nRepository status")
     print("────────────────────────────────")
-
     print("Identity:")
     print(f"  Name:   {name or '(not set)'}")
     print(f"  Email:  {email or '(not set)'}")
     print(f"  Source: {source}")
 
     print("\nAI:")
-    print(f"  Default model: {model if model else '(not set)'}")
+    print(f"  Model:   {model or '(not set)'}")
+    print(f"  Timeout: {timeout + 's' if timeout else '(default)'}")
 
-    branch = safe("git branch --show-current") or "(detached)"
-    print(f"\nBranch:     {branch}")
-
+    print(f"\nBranch:     {safe('git branch --show-current') or '(detached)'}")
     tag = safe("git describe --tags --abbrev=0")
     if tag:
         print(f"Latest tag: {tag}")
 
     print("\nRemotes:")
-    remotes = safe("git remote -v")
-    print(remotes if remotes else "  (none)")
+    print(safe("git remote -v") or "  (none)")
 
-    status = safe("git status --short")
     print("\nWorking tree:")
-    print("✔ Clean" if not status else status)
+    print("✔ Clean" if not safe("git status --short") else safe("git status --short"))
 
     print("\nRecent commits:")
-    log = safe("git log -3 --pretty=format:'%h | %ad | %s' --date=short")
-    print(log if log else "  (no commits yet)")
+    print(
+        safe("git log -3 --pretty=format:'%h | %ad | %s' --date=short")
+        or "  (no commits yet)"
+    )
     print()
 
 # ---------------- models ----------------
@@ -111,9 +106,8 @@ def list_llm_models():
 
 def model_score(m):
     name = m["id"]
-    score = 0
-    score += 1000 if "gemini" in name else 500
-    v = re.search(r"(\d+)\.(\d+)", name)
+    score = 1000 if "gemini" in name else 500
+    v = re.search(r"(\\d+)\\.(\\d+)", name)
     if v:
         score += int(v.group(1))*100 + int(v.group(2))*10
     if "flash" in name:
@@ -122,8 +116,41 @@ def model_score(m):
         score += 30
     return score
 
-def read_saved_model():
-    return safe("git config gup.model")
+def pick_model(models):
+    gemini = [m for m in models if "gemini" in m["id"]]
+    openai = [m for m in models if "gemini" not in m["id"]]
+    options = []
+    for m in (
+        max(gemini, key=model_score, default=None),
+        max(openai, key=model_score, default=None),
+    ):
+        if m and m not in options:
+            options.append(m)
+
+    print("\nAI model:")
+    for i,m in enumerate(options,1):
+        print(f" {i}) {m['label']}")
+    print(" 3) More models...")
+
+    c = input("Select model [1]: ").strip()
+    if c == "3":
+        for i,m in enumerate(models,1):
+            print(f" {i}) {m['label']}")
+        sel = input("Select model: ").strip()
+        return models[int(sel)-1]
+    if c.isdigit() and 1 <= int(c) <= len(options):
+        return options[int(c)-1]
+    return options[0]
+
+def configure_timeout(current):
+    val = input(f"Timeout in seconds (max 60) [{current or '12'}]: ").strip()
+    if not val:
+        return current
+    try:
+        t = min(60, max(1, int(val)))
+        return str(t)
+    except:
+        return current
 
 # ==========================================================
 # repo check
@@ -134,7 +161,6 @@ if safe("git rev-parse --is-inside-work-tree") != "true":
 
 bootstrap = not has_commits()
 
-# ---- clean repo path ----
 if not bootstrap and not safe("git status --porcelain"):
     print("Nothing to commit.")
     show_repo_dashboard()
@@ -144,7 +170,7 @@ if not bootstrap and not safe("git status --porcelain"):
 # version
 # ==========================================================
 last = "v0.0.0" if bootstrap else safe("git describe --tags --abbrev=0") or "v0.0.0"
-m = re.match(r"v(\d+)\.(\d+)\.(\d+)", last)
+m = re.match(r"v(\\d+)\\.(\\d+)\\.(\\d+)", last)
 major, minor, patch = map(int, m.groups()) if m else (0,0,0)
 next_version = f"v{major}.{minor}.{patch+1}"
 
@@ -167,62 +193,31 @@ if not files:
     sys.exit(0)
 
 # ==========================================================
-# model selection
+# model + timeout (silent if exists)
 # ==========================================================
 models = list_llm_models()
-saved_id = read_saved_model()
-saved_model = next((m for m in models if m["id"] == saved_id), None)
+model_id = safe("git config gup.model")
+timeout = safe("git config gup.timeout") or "12"
 
-gemini = [m for m in models if "gemini" in m["id"]]
-openai = [m for m in models if "gemini" not in m["id"]]
-
-best_gemini = max(gemini, key=model_score) if gemini else None
-best_openai = max(openai, key=model_score) if openai else None
-
-options = []
-if saved_model:
-    options.append(saved_model)
-for m in (best_gemini, best_openai):
-    if m and m not in options:
-        options.append(m)
-options = options[:2]
-
-print("\nAI model:")
-for i,m in enumerate(options,1):
-    tag = " (default)" if i == 1 else ""
-    print(f" {i}) {m['label']}{tag}")
-print(" 3) More models...")
-
-choice = input("Select model [default]: ").strip()
-
-if choice == "3":
-    print("\nAll models:")
-    for i,m in enumerate(models,1):
-        print(f" {i}) {m['label']}")
-    c = input("Select model: ").strip()
-    model = models[int(c)-1] if c.isdigit() and 1<=int(c)<=len(models) else options[0]
-elif choice.isdigit() and 1<=int(choice)<=len(options):
-    model = options[int(choice)-1]
+if model_id:
+    model = next((m for m in models if m["id"] == model_id), None)
 else:
-    model = options[0]
-
-run(f'git config gup.model "{model["id"]}"')
+    model = pick_model(models)
+    run(f'git config gup.model "{model["id"]}"')
 
 # ==========================================================
-# commit message
+# commit message generation
 # ==========================================================
-if bootstrap:
-    commit_msg = "Initial commit"
-elif len(files) == 1:
-    commit_msg = "Update project configuration"
-elif len(files) <= 5:
-    commit_msg = f"Update {len(files)} project files"
-else:
-    commit_msg = f"Update multiple project files ({len(files)})"
+commit_msg = (
+    "Initial commit" if bootstrap else
+    "Update project configuration" if len(files)==1 else
+    f"Update {len(files)} project files"
+)
 
-ai_warning = None
-diff = safe("git diff --cached --unified=0")[:15000]
-prompt = f"""Improve this Git commit message.
+def generate_message():
+    nonlocal_ai_warning = None
+    diff = safe("git diff --cached --unified=0")[:15000]
+    prompt = f"""Improve this Git commit message.
 
 Rules:
 - FIRST line ≤ 72 characters.
@@ -234,47 +229,48 @@ Current message:
 Diff:
 {diff}
 """
+    try:
+        p = subprocess.Popen(
+            ["llm","-m",model["id"],prompt],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        out, err = p.communicate(timeout=int(timeout))
+        if out.strip():
+            return enforce_summary_limit(out.strip()), None
+        return commit_msg, err.strip() or "AI returned empty output"
+    except subprocess.TimeoutExpired:
+        return commit_msg, "AI request timed out"
+    except Exception as e:
+        return commit_msg, str(e)
 
-try:
-    p = subprocess.Popen(
-        ["llm", "-m", model["id"], prompt],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True
-    )
-    out, err = p.communicate(timeout=12)
-    if out.strip():
-        commit_msg = out.strip()
-    elif err.strip():
-        ai_warning = err.strip()
-    else:
-        ai_warning = "AI returned empty output"
-except subprocess.TimeoutExpired:
-    ai_warning = "AI request timed out"
-except Exception as e:
-    ai_warning = str(e)
-
-commit_msg = enforce_summary_limit(commit_msg)
+commit_msg, ai_warning = generate_message()
 
 if ai_warning:
     print(f"\n{YELLOW}⚠️ AI commit message generation failed{RESET}")
     print(f"{YELLOW}   Reason: {ai_warning}{RESET}")
-    print(f"{YELLOW}   Model: {model['id']}{RESET}\n")
+    print(f"{YELLOW}   Model: {model['id']}, Timeout: {timeout}s{RESET}\n")
 
 # ==========================================================
 # review loop
 # ==========================================================
 while True:
     print(f"\n{BOLD}Identity:{RESET} {name} <{email}> [{source}]")
-    print(f"{BOLD}Version:{RESET} {next_version}")
-    print(f"{BOLD}Model:{RESET}   {model['label']}")
+    print(f"{BOLD}Version:{RESET}  {next_version}")
+    print(f"{BOLD}Model:{RESET}    {model['id']} ({timeout}s)")
     print(f"\n{BOLD}Message:{RESET}\n{commit_msg}\n")
-    print("1) Commit & push\n2) Edit identity\n3) Edit message\n4) Cancel")
+    print("1) Commit & push")
+    print("2) Edit identity")
+    print("3) Edit message")
+    print("4) Change model & regenerate")
+    print("5) Cancel")
     c = input("Choice: ").strip()
+
     if c == "1":
         break
     if c == "2":
-        name,email = prompt_identity(name,email)
+        name, email = prompt_identity(name, email)
         run(f'git config user.name "{name}"')
         run(f'git config user.email "{email}"')
         source = "repo"
@@ -282,6 +278,13 @@ while True:
         print("Enter message (Ctrl+D):")
         commit_msg = enforce_summary_limit(sys.stdin.read().strip())
     if c == "4":
+        model = pick_model(models)
+        run(f'git config gup.model "{model["id"]}"')
+        timeout = configure_timeout(timeout)
+        if timeout:
+            run(f'git config gup.timeout "{timeout}"')
+        commit_msg, ai_warning = generate_message()
+    if c == "5":
         sys.exit(0)
 
 # ==========================================================
@@ -303,11 +306,10 @@ Timestamp: {ts}
 """
 
 subprocess.check_call(["git","commit","-m",final_msg], env=env)
-run(f'git tag -a {next_version} -m "{final_msg}"')
+subprocess.check_call(["git","tag","-a",next_version,"-m",final_msg])
 
 branch = safe("git branch --show-current") or "main"
 run(f"git push -u origin {branch}")
 run(f"git push origin {next_version}")
 
 print(f"{GREEN}Released {next_version}{RESET}")
-
