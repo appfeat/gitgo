@@ -388,7 +388,8 @@ Diff:
         print(f"{CYAN}1){RESET} Commit & push")
         print(f"{CYAN}2){RESET} Edit identity")
         print(f"{CYAN}3){RESET} Edit message")
-        print(f"{CYAN}4){RESET} Cancel")
+        print(f"{CYAN}4){RESET} Change AI model & regenerate")
+        print(f"{CYAN}5){RESET} Cancel")
 
         c = input(f"{BLUE}Choice: {RESET}").strip()
 
@@ -403,6 +404,31 @@ Diff:
             info("Enter commit message (Ctrl+D):")
             commit_msg = enforce_summary_limit(sys.stdin.read().strip())
         if c == "4":
+            if not has_llm():
+                warn("AI tools not available. Install with: pip install llm")
+                continue
+
+            models = list_llm_models()
+            if not models:
+                warn("No AI models available. Configure using the llm CLI.")
+                continue
+
+            model = pick_model(models)
+            git_config_set("gup.model", model["id"])
+
+            timeout = clamp_timeout(
+                input(f"{BLUE}Timeout seconds (1–60) [{timeout}]: {RESET}") or timeout
+            )
+            git_config_set("gup.timeout", timeout)
+
+            commit_msg, ai_warning = generate_message()
+            if ai_warning:
+                warn(f"\n⚠ AI regeneration failed: {ai_warning}\n")
+                info("Keeping previous commit message.")
+            else:
+                git_config_set("gup.message-mode", "ai")
+            continue
+        if c == "5":
             sys.exit(0)
 
     env = os.environ.copy()
