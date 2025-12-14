@@ -6,7 +6,7 @@ import re
 import datetime
 
 # ==========================================================
-# gup — final, boring, trustworthy (model parsing fixed)
+# gup — final, boring, trustworthy (dashboard enriched)
 # ==========================================================
 
 BLUE="\033[34m"; GREEN="\033[32m"; YELLOW="\033[33m"
@@ -54,47 +54,65 @@ def read_identity():
 
 def prompt_identity(n, e):
     print("\nEnter commit identity (blank keeps current):")
-    n2 = input(f"Name [{n}]: ").strip() or n
-    e2 = input(f"Email [{e}]: ").strip() or e
-    return n2, e2
+    return (
+        input(f"Name [{n}]: ").strip() or n,
+        input(f"Email [{e}]: ").strip() or e,
+    )
+
+# ---------------- dashboard ----------------
+def show_repo_dashboard():
+    name, email, source = read_identity()
+    model = safe("git config gup.model")
+
+    print("\nRepository status")
+    print("────────────────────────────────")
+
+    print("Identity:")
+    print(f"  Name:   {name or '(not set)'}")
+    print(f"  Email:  {email or '(not set)'}")
+    print(f"  Source: {source}")
+
+    print("\nAI:")
+    print(f"  Default model: {model if model else '(not set)'}")
+
+    branch = safe("git branch --show-current") or "(detached)"
+    print(f"\nBranch:     {branch}")
+
+    tag = safe("git describe --tags --abbrev=0")
+    if tag:
+        print(f"Latest tag: {tag}")
+
+    print("\nRemotes:")
+    remotes = safe("git remote -v")
+    print(remotes if remotes else "  (none)")
+
+    status = safe("git status --short")
+    print("\nWorking tree:")
+    print("✔ Clean" if not status else status)
+
+    print("\nRecent commits:")
+    log = safe("git log -3 --pretty=format:'%h | %ad | %s' --date=short")
+    print(log if log else "  (no commits yet)")
+    print()
 
 # ---------------- models ----------------
 def list_llm_models():
-    """
-    Returns list of dicts:
-    { "id": "gpt-5-mini", "label": "OpenAI Chat: gpt-5-mini" }
-    """
     out = safe("llm models")
     models = []
     for line in out.splitlines():
         line = line.strip()
         if not line or line.endswith(":"):
             continue
-
         label = line
-        core = line
-
-        # Strip aliases
-        if "(" in core:
-            core = core.split("(", 1)[0].strip()
-
-        # Extract canonical id (after last colon)
-        if ":" in core:
-            model_id = core.split(":")[-1].strip()
-        else:
-            model_id = core.strip()
-
+        core = line.split("(", 1)[0].strip()
+        model_id = core.split(":")[-1].strip()
         models.append({"id": model_id, "label": label})
-
     return models
 
 def model_score(m):
     name = m["id"]
     score = 0
-    if "gemini" in name:
-        score += 1000
-    else:
-        score += 500
+    score += 1000 if "gemini" in name else 500
     v = re.search(r"(\d+)\.(\d+)", name)
     if v:
         score += int(v.group(1))*100 + int(v.group(2))*10
@@ -116,8 +134,10 @@ if safe("git rev-parse --is-inside-work-tree") != "true":
 
 bootstrap = not has_commits()
 
+# ---- clean repo path ----
 if not bootstrap and not safe("git status --porcelain"):
     print("Nothing to commit.")
+    show_repo_dashboard()
     sys.exit(0)
 
 # ==========================================================
@@ -143,10 +163,11 @@ run("git add .")
 files = safe("git diff --cached --name-only").splitlines()
 if not files:
     print("No staged changes.")
+    show_repo_dashboard()
     sys.exit(0)
 
 # ==========================================================
-# model selection (progressive + memory)
+# model selection
 # ==========================================================
 models = list_llm_models()
 saved_id = read_saved_model()
@@ -188,7 +209,7 @@ else:
 run(f'git config gup.model "{model["id"]}"')
 
 # ==========================================================
-# commit message (deterministic + AI + enforced limit)
+# commit message
 # ==========================================================
 if bootstrap:
     commit_msg = "Initial commit"
@@ -206,7 +227,6 @@ prompt = f"""Improve this Git commit message.
 Rules:
 - FIRST line ≤ 72 characters.
 - Do NOT invent details.
-- You may add paragraphs if useful.
 
 Current message:
 {commit_msg}
@@ -290,3 +310,4 @@ run(f"git push -u origin {branch}")
 run(f"git push origin {next_version}")
 
 print(f"{GREEN}Released {next_version}{RESET}")
+
