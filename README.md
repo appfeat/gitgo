@@ -67,7 +67,9 @@ It favors **clarity over cleverness** and **review over speed**.
 
 Install gup as a standard CLI tool:
 
-    pip install gup
+    git clone git@github.com:appfeat/gup.git
+    cd gup 
+    pip install .
 
 After installation, the `gup` command will be available on your PATH.
 
